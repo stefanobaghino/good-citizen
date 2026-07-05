@@ -1,6 +1,6 @@
 # dv-user-sbaghino-tools
 
-Personal Claude Code tweaks. Currently ships one thing:
+Personal Claude Code tweaks.
 
 ## PR & Commit hygiene hooks
 
@@ -88,3 +88,19 @@ The script takes zero or more doc names, reads `hygiene/<name>.md` for each, and
 ```
 
 Prints a JSON envelope with `header.md` followed by `commit.md` in `hookSpecificOutput.additionalContext`. With no args (or no matching files), exits 0 silently.
+
+## Skills
+
+### `/ptal`
+
+Composes a "please take a look" PR review-request message for Slack — problem-first, routed to the right reviewer, with the same hygiene rules the hooks inject (no counts, no AI attribution, link the trigger, lead with the experience). Drafts by default and posts only when told.
+
+```
+skills/ptal/SKILL.md
+```
+
+Install by symlinking into your skills dir, then reload (`/skills` or restart):
+
+```sh
+ln -s "$PWD/skills/ptal" ~/.claude/skills/ptal
+```
