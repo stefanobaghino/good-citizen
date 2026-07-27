@@ -1,0 +1,1 @@
+Issues: carry enough context for a cold reader to engage — context-sharing over brevity — but link canonical material (paths, symbols, issues, PRs) instead of copying it. Closing keywords (`closes`/`fixes`) only work from PRs, not from issue bodies/comments; use `see #N` for plain cross-references.

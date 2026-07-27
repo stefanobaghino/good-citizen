@@ -1,0 +1,1 @@
+Hygiene (GitHub artifacts are permanent): no conversation-only material — no scratch-file references, no ideas that exist nowhere sharable. Point at code/issues/docs instead of restating their content. For non-trivial bodies, Write a temp file and pass `--body-file`/`--file` instead of inline quoting.

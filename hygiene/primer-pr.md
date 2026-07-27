@@ -1,0 +1,1 @@
+PRs: open with motivation, then the user-visible behavior change — not implementation mechanics (the diff shows those). Link sources instead of paraphrasing. Fold deep material (justifications, excerpts, tables) into `<details>` with a blank line after `</summary>`; never hide what a reviewer needs to approve. Describe the change as a whole, not per-commit.
