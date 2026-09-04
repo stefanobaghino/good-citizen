@@ -1,0 +1,5 @@
+# The hook imports bashpolicy on every Bash call, so Python writes
+# bytecode next to the package. Keeping it speeds hook startup; it just
+# does not belong in the repo.
+__pycache__/
+*.py[cod]

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Re-verification for hygiene-dispatch.py — run after each Claude Code
+# Re-verification for whichever Bash policy hook is wired in settings
+# (hooks/bash-policy.py) — run after each Claude Code
 # upgrade. Drives one throwaway headless session through the negative
 # controls and one positive control, then checks the transcript:
 #   PASS = zero hygiene injections/denials on negatives, primer exactly
