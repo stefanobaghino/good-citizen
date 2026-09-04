@@ -1,9 +1,9 @@
 #!/bin/bash
-# Re-verification for whichever Bash policy hook is wired in settings
-# (hooks/bash-policy.py) — run after each Claude Code
-# upgrade. Drives one throwaway headless session through the negative
-# controls and one positive control, then checks the transcript:
-#   PASS = zero hygiene injections/denials on negatives, primer exactly
+# Re-verification for the Bash policy hook wired in settings
+# (hooks/bash-policy.py) — run after each Claude Code upgrade. Drives
+# one throwaway headless session through the negative controls and one
+# positive control, then checks the transcript:
+#   PASS = zero context injections/denials on negatives, primer exactly
 #          once on the positive control.
 # Cost: one short claude-haiku session against your subscription.
 set -uo pipefail
@@ -56,7 +56,11 @@ for line in open(hits[0], encoding="utf-8"):
             continue
         if block.get("type") == "tool_use" and block.get("name") == "Bash":
             commands[block.get("id")] = (block.get("input") or {}).get("command", "")
-        if block.get("type") == "tool_result" and "Hygiene check" in json.dumps(block.get("content")):
+        # A denial carries no marker of its own: the tool_result content
+        # is the hook's reason verbatim. The record-level toolDenialKind
+        # is the signal, and `is_error` alone is not — the negative
+        # controls include commands that legitimately fail.
+        if block.get("type") == "tool_result" and obj.get("toolDenialKind"):
             denials.append(block.get("tool_use_id"))
     att = obj.get("attachment")
     if isinstance(att, dict) and att.get("type") == "hook_additional_context":

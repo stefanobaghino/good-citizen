@@ -1,18 +1,14 @@
 """Rule registry, criticality tiers, and the decision fold.
 
-Two things this buys over running one hook per concern:
-
   * Rules are isolated. Each runs in its own try/except, so a bug in a
-    hygiene rule cannot take down the force-push rule that used to live
-    in a separate process.
+    hygiene rule cannot take down the force-push rule.
   * Criticality is explicit. An ADVISORY rule that errors is skipped
     (fail open, as a style gate should). A CRITICAL rule that errors
-    denies (fail closed) — the old `git-history-guard.py` failed open on
-    its own bugs, silently removing push protection.
+    denies (fail closed), so a bug in it never silently removes push
+    protection.
 
 The fold mirrors Claude Code's own precedence for multiple PreToolUse
-hooks (deny > defer > ask > allow, order-independent), so collapsing two
-hooks into one does not change which decision wins.
+hooks: deny > defer > ask > allow, order-independent.
 """
 
 CRITICAL = "critical"
@@ -124,7 +120,7 @@ def evaluate(invocations, ctx, registry=None):
     # `allow` is opt-in, never a consequence of merely matching. The
     # hygiene rules assert it on a validated artifact (that is what keeps
     # `git commit` from prompting); the git-history rules stay silent on
-    # a pass, so folding them in must not start auto-approving pushes.
+    # a pass, so a push that clears them is not auto-approved.
     allows = [f for f in findings if f.decision == "allow"]
     if allows:
         contexts = [f.context for f in allows if f.context]
@@ -136,9 +132,9 @@ def evaluate(invocations, ctx, registry=None):
 def render(blocking):
     """One message listing every blocking finding.
 
-    Both hooks could fire on `git commit`; separately, only one reason
-    ever reached the transcript. Collected here, a single denial can
-    report the signing problem and the message problem together.
+    Several rules can fire on one command — `git commit` can trip both
+    signing and message checks — so one denial reports all of them
+    rather than whichever came first.
     """
     if len(blocking) == 1:
         return blocking[0].msg

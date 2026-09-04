@@ -3,16 +3,15 @@
 
 Run: python3 hooks/test-bash-policy.py
 
-Complements hooks/verify-hygiene-hooks.sh, which drives a real headless
+Complements hooks/verify-bash-policy.sh, which drives a real headless
 Claude Code session (and costs one) to confirm the hook is wired up and
 stays quiet on tricky quoting. This suite exercises the decisions
 directly: it feeds the hook a PreToolUse payload on stdin and asserts on
 the JSON it prints, with state and primers redirected away from the real
 ~/.claude.
 
-Every case that mattered to either predecessor hook is covered, plus the
-behaviors the merge introduces: the decision fold, criticality tiers,
-and per-rule isolation.
+Every rule is covered, plus the machinery around them: the decision
+fold, criticality tiers, and per-rule isolation.
 """
 
 import json
@@ -150,15 +149,13 @@ def test_force_push():
     check("ask-nohint[lease+includes]",
           "Add --force-if-includes" not in r["reason"], r["reason"][:160])
 
-    # An unbalanced quote used to make shlex.split raise, and the old
-    # guard returned (allowing) on that. The shared tokenizer is
-    # permissive, so the force flag is still seen.
+    # The tokenizer is permissive about an unbalanced quote, so the
+    # force flag is still seen.
     r = run_hook("git push --force 'unterminated", cwd=repo)
     check("deny[unbalanced-quote force]", r["decision"] == "deny",
           f"got {r['decision']}")
 
-    # Heredoc content is not a command: the old parser could not see the
-    # difference, this one can.
+    # Heredoc content is data, not a command.
     r = run_hook("cat <<'EOF'\ngit push --force\nEOF", cwd=repo)
     check("silent[force inside heredoc]", r["decision"] is None,
           f"got {r['decision']} / {r['reason'][:90]}")
@@ -194,8 +191,8 @@ def test_commit_signing():
           f"got {r['decision']} / {r['reason'][:120]}")
 
     # A repo with no local setting inherits the developer's global
-    # commit.gpgsign, which is what the old guard did too. Only assert
-    # this where a global actually enables signing.
+    # commit.gpgsign. Only assert this where a global actually enables
+    # signing.
     glob = subprocess.run(["git", "config", "--global", "--get",
                            "commit.gpgsign"],
                           capture_output=True, text=True, check=False)
@@ -274,13 +271,13 @@ def test_hygiene():
                   r["reason"][:160])
 
     # `git -C <path> commit` is normalized before matching, so hygiene
-    # now sees it. The old raw leading-word match did not.
+    # sees it.
     r = run_hook(f'git -C {repo} commit -m "Add the thing."',
                  cwd=repo, session="hygdashC")
     check("hygiene[git -C commit]", r["decision"] == "deny",
           f"got {r['decision']} / {r['reason'][:120]}")
 
-    # gh PR body checks still fire.
+    # gh PR bodies go through the same checks.
     r = run_hook('gh pr create --title "Add it" --body "Closes #1, #2"',
                  cwd=repo, session="hygpr")
     check("hygiene[pr closing-multi]", r["decision"] == "deny",
@@ -380,8 +377,7 @@ def test_tiers_in_process():
     check("fold[ask outranks allow]", v.decision == "ask", f"got {v.decision}")
 
     # Matching without an explicit allow stays silent — this is what
-    # keeps `git push` from being auto-approved now that the history
-    # rules share a hook with hygiene.
+    # keeps `git push` from being auto-approved.
     reg = [Rule("quiet", ADVISORY, [("git", "push")],
                 lambda invocations, ctx: [])]
     v = evaluate(invs, None, registry=reg)

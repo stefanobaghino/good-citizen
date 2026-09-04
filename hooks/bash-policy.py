@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
 """Centralized Bash policy — Claude Code PreToolUse hook.
 
-One registration (matcher "Bash", no `if`) covering everything the two
-previous hooks did:
+One registration (matcher "Bash", no `if`) covering:
 
-  * commit-message / PR / issue hygiene  (was hooks/hygiene-dispatch.py)
-  * git history safety and commit signing (was ~/.claude/hooks/git-history-guard.py)
+  * commit-message / PR / issue hygiene
+  * git history safety and commit signing
 
-Why one hook rather than two: both parsed the same command string, and
-the safety-critical one carried the weaker parser — `shlex.split`, which
-cannot see into heredocs and returned (allowing the command) on anything
-it failed to parse. Sharing `bashpolicy.shell` gives the history rules
-the quote/heredoc-aware splitter, and matching on a normalized command
-path means `git -C /elsewhere commit` is now policed too, which the
-hygiene dispatcher's raw leading-word match missed.
+Every rule works off a single parse from `bashpolicy.shell`, which is
+quote- and heredoc-aware, and matches on a normalized command path, so
+`git -C /elsewhere commit` is policed like any other form.
 
 Decisions from all rules are folded with Claude Code's own precedence
-for multiple PreToolUse hooks — deny > defer > ask > allow, and
-order-independent — so collapsing two hooks into one cannot change which
-decision wins. `allow` is opt-in per rule, so folding the history rules
-in does not start auto-approving `git push`.
+for multiple PreToolUse hooks: deny > defer > ask > allow, and
+order-independent. `allow` is opt-in per rule, so a rule that merely
+matches never auto-approves `git push`.
 
 Failure policy:
   * ADVISORY rule raises  -> skipped; a style gate never blocks work.
-  * CRITICAL rule raises  -> deny; the old guard failed open on its own
-                             bugs, silently dropping push protection.
+  * CRITICAL rule raises  -> deny, rather than letting a command through
+                             unchecked.
   * Command unparseable   -> deny only if it textually looks like a
                              history-affecting git command, else silent.
   * Anything else (bad stdin, import error) -> exit 0, no output.
@@ -46,8 +40,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Budget for all git inspection in one hook invocation. The signature
-# check is a single `git log` now, so this is a backstop rather than the
-# load-bearing bound the old per-commit loop needed.
+# check is a single `git log`, so this is a backstop, not a bound the
+# rules are expected to reach.
 GIT_BUDGET_S = 20.0
 
 # Crude textual net for the parse-failure path: if the parser cannot
@@ -123,6 +117,6 @@ if __name__ == "__main__":
         main()
     except Exception:
         # Fail open on anything the rule tiers did not already handle:
-        # never break every Bash call on a dispatcher bug.
+        # never break every Bash call on a bug in this entry point.
         sys.exit(0)
     sys.exit(0)

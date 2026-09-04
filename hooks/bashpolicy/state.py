@@ -1,8 +1,8 @@
 """On-disk state, config, and session primers.
 
-Paths match `hygiene-dispatch.py` so existing markers and config keep
-working across the switch. Both are overridable by environment variable
-so the test suite never touches the real `~/.claude` state.
+The state directory and the primer directory are both overridable by
+environment variable, so the test suite never touches the real
+`~/.claude` state.
 """
 
 import datetime

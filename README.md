@@ -142,7 +142,7 @@ hooks/bashpolicy/githist.py    # git history safety rules (CRITICAL)
 hooks/bashpolicy/hygiene.py    # commit/PR/issue hygiene rules (ADVISORY)
 hooks/bashpolicy/state.py      # markers, config, session primers
 hooks/test-bash-policy.py      # unit suite — no live session, no cost
-hooks/verify-hygiene-hooks.sh  # post-upgrade re-verification harness (live session)
+hooks/verify-bash-policy.sh    # post-upgrade re-verification harness (live session)
 hygiene/primer-shared.md       # judgment primer, always included
 hygiene/primer-commit.md       # + when a commit is in the command
 hygiene/primer-pr.md           # + for gh pr create
@@ -240,13 +240,13 @@ every `git push`. `allow` is opt-in per rule, and there is a test for it.
 
 ### Post-upgrade verification
 
-`hooks/verify-hygiene-hooks.sh` re-checks the behavior after a CLI upgrade: it
+`hooks/verify-bash-policy.sh` re-checks the behavior after a CLI upgrade: it
 drives a throwaway headless session (`claude -p`, Haiku,
 `--dangerously-skip-permissions`) through eight negative controls and one real
 commit, then greps the transcript and prints PASS/FAIL.
 
 ```sh
-./hooks/verify-hygiene-hooks.sh
+./hooks/verify-bash-policy.sh
 ```
 
 PASS = zero injections/denials on the negative controls, primer exactly once on the

@@ -1,21 +1,16 @@
 """Git history-safety rules: no rewriting published history, no unsigned
 commits.
 
-Carried over from `git-history-guard.py`. Three things changed:
+These rules are CRITICAL: a bug in them denies rather than letting a
+force push through. Signature checking is a single `git log --format`
+call over at most MAX_SCANNED_COMMITS outgoing commits, and git runs
+with an explicit cwd from the hook payload rather than inheriting
+whatever directory the hook process happens to sit in.
 
-  * The rules are CRITICAL, so a bug in them denies instead of silently
-    allowing a force push (the standalone hook failed open on its own
-    errors).
-  * Signature checking is one `git log --format` call instead of up to
-    101 subprocesses (`rev-list` plus one `cat-file` per commit), which
-    is what made the old hook need a wall-clock timeout at all.
-  * git runs with an explicit cwd from the hook payload rather than
-    inheriting whatever directory the hook process happened to be in.
-
-Only `%G?` == "N" counts as unsigned, matching the old check for a
-missing `gpgsig` header: a commit whose signature exists but cannot be
-verified locally (no public key — `%G?` == "E") is signed, and denying
-those would block every push on a machine without the signer's key.
+Only `%G?` == "N" counts as unsigned: a commit whose signature exists
+but cannot be verified locally (no public key — `%G?` == "E") is signed,
+and denying those would block every push on a machine without the
+signer's key.
 """
 
 import subprocess

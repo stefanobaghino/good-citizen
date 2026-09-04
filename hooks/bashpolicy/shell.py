@@ -1,9 +1,8 @@
 """Shell command parsing shared by every policy rule.
 
-Lifted from the quote/heredoc-aware splitter that `hygiene-dispatch.py`
-grew, so the git-history rules inherit it instead of the `shlex.split`
-approximation they used to carry — that one could not see into heredocs
-and silently allowed any command it failed to parse.
+Quote- and heredoc-aware: a heredoc body is data, not a command, and a
+segment that cannot be parsed raises `ParseError` so the caller decides
+what to do with it.
 
 Ambiguity resolves toward fewer segments: false negatives are acceptable
 here, false positives are not.
@@ -231,8 +230,8 @@ class Invocation:
 
     `path` is the (tool, subcommand, ...) prefix rules match on. git's
     global options are skipped first, so `git -C /x commit` has path
-    ("git", "commit") and gitopts ["-C", "/x"] — `hygiene-dispatch.py`
-    matched on raw leading words and so missed that form entirely.
+    ("git", "commit") and gitopts ["-C", "/x"], and a rule declared
+    against ("git", "commit") catches both spellings.
     """
 
     __slots__ = ("seg", "heredocs", "words", "gitopts", "path", "argv")

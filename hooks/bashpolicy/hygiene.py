@@ -1,12 +1,10 @@
 """Commit-message / PR / issue hygiene rules.
 
-Carried over from `hygiene-dispatch.py` with the rules unchanged. What
-changed is the plumbing: the artifact is extracted from the already
-tokenized `Invocation` instead of re-parsing the segment, and the
-findings go through the shared fold.
+The artifact under review is extracted from the already tokenized
+`Invocation`, and the findings go through the shared fold.
 
-These rules are ADVISORY: a bug here must never block work, and the
-existing loop guard and ack-and-retry escapes are preserved.
+These rules are ADVISORY: a bug here must never block work, which is
+also why the loop guard and the ack-and-retry escape exist.
 """
 
 import hashlib
@@ -373,8 +371,7 @@ def check_hygiene(invocations, ctx):
     """Validate every drafted commit / PR / issue in the command.
 
     Receives the whole batch because the Tier C ack-and-retry and the
-    loop guard are keyed on the combined finding set, exactly as the
-    standalone dispatcher did.
+    loop guard are keyed on the combined finding set.
     """
     cfg = ctx.config
     state.ensure_state_dir()
