@@ -3,3 +3,7 @@
 # does not belong in the repo.
 __pycache__/
 *.py[cod]
+
+# Claude Code worktrees live inside the repo; they are checkouts of it,
+# never content of it.
+.claude/worktrees/
