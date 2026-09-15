@@ -184,6 +184,12 @@ def test_commit_signing():
     check("deny-reason[gpgsign unset]", "not configured" in r["reason"],
           r["reason"][:120])
 
+    # git never answers when a gitopt cannot be resolved; that must not
+    # read as "unsigned".
+    r = run_hook('git -C "$R" commit -m "Add a fixture"', cwd=repo)
+    check("no-deny[-C with an unexpanded variable]", r["decision"] != "deny",
+          f"got {r['decision']} / {r['reason'][:120]}")
+
     # -S overrides the config check.
     r = run_hook('git commit -S -m "Add a fixture"', cwd=repo_unset,
                  isolate_git=True)

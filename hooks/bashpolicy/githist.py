@@ -145,7 +145,11 @@ def check_commit_signing(invocations, ctx):
                 msg=("commit.gpgsign is disabled in this repo, so this commit "
                      "would be unsigned. Enable signing or pass -S explicitly."),
             ))
-        elif r.returncode != 0:
+        elif r.returncode == 1:
+            # `config --get` exits 1 only for an unset key. A different
+            # status means git never answered, as it does for a gitopt the
+            # parser cannot resolve such as `-C "$REPO"`; denying then
+            # would block a correctly signed commit.
             findings.append(Finding(
                 "deny", "git-commit-signing", tier=CRITICAL,
                 msg=("commit.gpgsign is not configured, so this commit would be "
