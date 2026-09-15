@@ -719,6 +719,93 @@ def test_comment_blocks_in_process():
           str(_blocks_by_file(unmapped)))
 
 
+# ------------------------------------------------ worktree / branch naming
+
+
+NAMING_SILENT = [
+    # An operand the shell would rewrite is never judged.
+    'git worktree add "$WT"',
+    'git switch -c "$B"',
+    'git checkout -b "${BRANCH}"',
+    'git worktree add ../wt-$(date +%s)',
+    # Conforming names.
+    "git checkout -b sbaghino/123-do-the-thing",
+    "git switch -c sbaghino/do-the-thing",
+    "git branch sbaghino/9-x",
+    "git worktree add -b sbaghino/1-work ../wt",
+    "git branch -m sbaghino/1-a sbaghino/2-b",
+    # Not a creation at all.
+    "git branch -d sbaghino/1-old",
+    "git branch -a",
+    "git branch --list 'sbaghino/*'",
+    "git branch -v",
+    "git branch --set-upstream-to=origin/main sbaghino/1-a",
+    "git checkout main",
+    "git switch main",
+    "git worktree add ../wt sbaghino/1-work",
+    "git worktree add --detach ../wt",
+    "git worktree list",
+]
+
+
+def test_naming():
+    repo = make_repo(gpgsign=True)
+
+    r = run_hook("git worktree add ../wt+1", cwd=repo)
+    check("deny[worktree +]", r["decision"] == "deny", f"got {r['decision']}")
+    check("deny-reason[worktree +]",
+          "`+`" in r["reason"] and "Gradle" in r["reason"], r["reason"][:160])
+
+    r = run_hook("git worktree add -b sbaghino/1-work ../wt+1", cwd=repo)
+    check("deny[worktree + with good branch]", r["decision"] == "deny",
+          f"got {r['decision']}")
+
+    r = run_hook("git worktree add -b sbaghino/1-work+x ../wt", cwd=repo)
+    check("deny[worktree branch +]", r["decision"] == "deny",
+          f"got {r['decision']}")
+
+    # No commit-ish and no -b: git names the branch after the path's last
+    # segment, which can never carry the required `sbaghino/` prefix.
+    r = run_hook("git worktree add ../wt", cwd=repo)
+    check("deny[worktree implied branch]", r["decision"] == "deny",
+          f"got {r['decision']}")
+    check("deny-reason[worktree implied branch]", "-b" in r["reason"],
+          r["reason"][:200])
+
+    for cmd, bad in [("git checkout -b feature/foo", "feature/foo"),
+                     ("git switch --create=Bad_Name", "Bad_Name"),
+                     ("git switch -c sbaghino/Has-Caps", "sbaghino/Has-Caps"),
+                     ("git branch sbaghino/trailing-", "sbaghino/trailing-"),
+                     ("git branch nopfx", "nopfx"),
+                     ("git branch -m sbaghino/1-a BAD", "BAD"),
+                     ("git checkout -b sbaghino/a--b", "sbaghino/a--b")]:
+        r = run_hook(cmd, cwd=repo)
+        check(f"deny[{cmd}]", r["decision"] == "deny", f"got {r['decision']}")
+        check(f"deny-reason[{cmd}]", f"`{bad}`" in r["reason"],
+              r["reason"][:160])
+
+    for cmd in NAMING_SILENT:
+        r = run_hook(cmd, cwd=repo)
+        check(f"naming-silent[{cmd[:40]}]", r["decision"] is None,
+              f"got {r['decision']} / {r['reason'][:100]}")
+
+    # Matching a naming prefix must not auto-approve the command.
+    r = run_hook("git checkout -b sbaghino/1-fine", cwd=repo)
+    check("naming[conforming name is not an allow]", r["decision"] is None,
+          f"got {r['decision']}")
+
+    home = tempfile.mkdtemp(prefix="bashpolicy-home-")
+    with open(os.path.join(home, "hygiene-config.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({"branch_name_pattern": "^wip/[a-z]+$"}, fh)
+    r = run_hook("git checkout -b wip/thing", cwd=repo, home=home)
+    check("naming[config pattern accepts]", r["decision"] is None,
+          f"got {r['decision']} / {r['reason'][:120]}")
+    r = run_hook("git checkout -b sbaghino/1-thing", cwd=repo, home=home)
+    check("naming[config pattern rejects the default shape]",
+          r["decision"] == "deny", f"got {r['decision']}")
+
+
 # --------------------------------------------------------------------- main
 
 if __name__ == "__main__":
@@ -741,6 +828,7 @@ if __name__ == "__main__":
     test_primer_marker_migration()
     test_ack_and_retry()
     test_comments()
+    test_naming()
     test_comment_blocks_in_process()
     test_non_bash_and_bad_input()
 

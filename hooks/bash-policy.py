@@ -5,6 +5,7 @@ One registration (matcher "Bash", no `if`) covering:
 
   * commit-message / PR / issue hygiene
   * git history safety and commit signing
+  * worktree and branch naming
 
 Every rule works off a single parse from `bashpolicy.shell`, which is
 quote- and heredoc-aware, and matches on a normalized command path, so
@@ -29,7 +30,8 @@ Layout:
   State:   ~/.claude/hooks/.state/         ($BASH_POLICY_HOME to override)
   Config:  ~/.claude/hooks/hygiene-config.json
            {"signoff_cwd_substrings": ["/path/fragment", ...],
-            "primer_token_step": 200000}
+            "primer_token_step": 200000,
+            "branch_name_pattern": "^sbaghino/..."}
 """
 
 import json
@@ -97,7 +99,8 @@ def main():
     if not cmd or not isinstance(cmd, str):
         return
 
-    from bashpolicy import comments, githist, hygiene, shell, state  # noqa: F401
+    from bashpolicy import (comments, githist, hygiene, naming, shell,  # noqa: F401
+                            state)
     from bashpolicy.policy import evaluate
 
     ctx = Context(data, state.load_config())

@@ -5,7 +5,7 @@ Personal Claude Code tweaks.
 ## Bash policy hook
 
 A single `PreToolUse` hook on `Bash` that polices how specific CLI tools are
-used, in two domains:
+used, in three domains:
 
 - **Artifact hygiene** — validates the `git commit`, `gh pr create`, or
   `gh issue create|comment|edit` Claude is about to run and denies violations
@@ -13,9 +13,11 @@ used, in two domains:
   injected, but as a ~113-token primer, once per session.
 - **Git history safety** — refuses force pushes and unsigned commits, and asks
   before rewriting history that is already published.
+- **Worktree and branch naming** — refuses a `+` in a worktree path and a branch
+  name that misses the convention.
 
-Both used to be separate hooks (`hooks/hygiene-dispatch.py` here and a personal
-`git-history-guard.py`). They parsed the same command string twice, and the
+The first two used to be separate hooks (`hooks/hygiene-dispatch.py` here and a
+personal `git-history-guard.py`). They parsed the same command string twice, and the
 safety-critical one carried the weaker parser: `shlex.split`, which cannot see
 into heredocs and *allowed* any command it failed to parse. One hook, one parse,
 one rule registry — see [Why one hook](#why-one-hook).
@@ -156,6 +158,29 @@ the rationale and correctness arguments worth writing.
 Machine-written trees (`generated`, `node_modules`, `build`, `vendor`, `dist`,
 `target`, `out`) are skipped, as are suffixes with no comment syntax mapped.
 
+### The rules — worktree and branch naming (ADVISORY)
+
+| Command | Decision | Why |
+|---|---|---|
+| `git worktree add` whose path or `-b` name holds `+` | **deny** | `+` interferes with Gradle |
+| `git checkout -b` / `git switch -c` / `git branch <name>` / `git branch -m … <new>` / `git worktree add -b` off-convention | **deny** | branches are `sbaghino/[<issue-number>-]<kebab-case-blurb>` |
+| `git worktree add <path>` with neither a commit-ish nor `-b` | **deny** | git names the branch `$(basename <path>)`, which can never carry the required prefix — pass `-b` |
+
+A conforming name produces **no output**, not an `allow`: a naming rule must not
+auto-approve the command it happens to match. `git branch` in any of its
+listing, deleting or upstream-setting spellings creates nothing and is ignored,
+bundled shorts (`-dr`) included.
+
+**Known limitation — the check stops at the first `$`.** `git worktree add
+"$WT"` reaches the hook as the four characters `$WT`, and there is no way to
+resolve that without running the command substitutions the string may hold.
+Verified: `bash -n` and `zsh -n` expand nothing, a `DEBUG` trap reports
+`$BASH_COMMAND` still unexpanded, and `set -x` prints the expanded words only
+*after* executing the substitution. Any operand containing `$` or a backtick is
+therefore passed without judgement — the same accepted false negative as a
+watched command wrapped in `$(…)`, and the same rule the signing check follows
+for an unresolvable `git -C "$R"`.
+
 ### Layout
 
 ```
@@ -165,6 +190,7 @@ hooks/bashpolicy/policy.py     # rule registry, criticality tiers, decision fold
 hooks/bashpolicy/githist.py    # git history safety rules (CRITICAL)
 hooks/bashpolicy/hygiene.py    # commit/PR/issue hygiene rules (ADVISORY)
 hooks/bashpolicy/comments.py   # comment guidance on commits (ADVISORY, never blocks)
+hooks/bashpolicy/naming.py     # worktree and branch naming (ADVISORY)
 hooks/bashpolicy/state.py      # markers, config, per-context primers
 hooks/test-bash-policy.py      # unit suite — no live session, no cost
 hooks/verify-bash-policy.sh    # post-upgrade re-verification harness (live session)
@@ -246,13 +272,17 @@ Absent file = defaults (deny all trailers).
 `"primer_token_step": 200000` in the same file sets how much the context has to
 grow before a primer is re-injected.
 
+`"branch_name_pattern": "^sbaghino/(?:\\d+-)?[a-z0-9]+(?:-[a-z0-9]+)*$"` replaces
+the branch-name convention with your own Python regex. An unparseable pattern
+falls back to the default rather than disabling the rule.
+
 ### Tests
 
 ```sh
 python3 hooks/test-bash-policy.py
 ```
 
-100 assertions, no live session and no cost: it feeds the hook `PreToolUse`
+155 assertions, no live session and no cost: it feeds the hook `PreToolUse`
 payloads on stdin and asserts on the JSON it prints, with state and primers
 redirected away from `~/.claude` and throwaway git repos as fixtures. Covers
 every decision either predecessor hook made, plus what the merge introduces —
