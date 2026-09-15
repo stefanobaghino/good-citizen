@@ -132,6 +132,25 @@ made the old `if`-filter misfire on unrelated `$(…)` commands. This is an acce
 false negative (the design never denies a command it isn't sure about). Run the
 watched command at the top level if you want it checked.
 
+### The rules — comment guidance (ADVISORY, never blocks)
+
+On `git commit`, the staged diff (`git diff --cached -U0`, or `git diff HEAD`
+under `-a`) is scanned for runs of added comment lines. If it has any, the hook
+attaches the guide in `hygiene/primer-comments.md` — the recovery, staleness and
+subject tests, what to write, what to delete, register, and a boy-scout licence
+for comments the diff already touches. Later commits in the same session get a
+one-line reminder naming the files and pointing back at the guide.
+
+This rule only ever returns `allow` with context. It reports that comments are
+present and hands over the standard; it never judges a particular comment and
+never blocks a commit. Proxies for a *bad* comment — block length, history
+phrasing, causal connectives, em-dash density — were built and dropped: they
+miss inaccuracy and odd register entirely, and the shapes they do catch include
+the rationale and correctness arguments worth writing.
+
+Machine-written trees (`generated`, `node_modules`, `build`, `vendor`, `dist`,
+`target`, `out`) are skipped, as are suffixes with no comment syntax mapped.
+
 ### Layout
 
 ```
@@ -140,6 +159,7 @@ hooks/bashpolicy/shell.py      # command splitting/tokenizing, shared by all rul
 hooks/bashpolicy/policy.py     # rule registry, criticality tiers, decision fold
 hooks/bashpolicy/githist.py    # git history safety rules (CRITICAL)
 hooks/bashpolicy/hygiene.py    # commit/PR/issue hygiene rules (ADVISORY)
+hooks/bashpolicy/comments.py   # comment guidance on commits (ADVISORY, never blocks)
 hooks/bashpolicy/state.py      # markers, config, session primers
 hooks/test-bash-policy.py      # unit suite — no live session, no cost
 hooks/verify-bash-policy.sh    # post-upgrade re-verification harness (live session)
@@ -147,6 +167,7 @@ hygiene/primer-shared.md       # judgment primer, always included
 hygiene/primer-commit.md       # + when a commit is in the command
 hygiene/primer-pr.md           # + for gh pr create
 hygiene/primer-issue.md        # + for gh issue create|comment|edit
+hygiene/primer-comments.md     # + when the staged diff adds comments
 ```
 
 Adding coverage for another CLI tool means one entry in the registry: a
@@ -223,7 +244,7 @@ Absent file = defaults (deny all trailers).
 python3 hooks/test-bash-policy.py
 ```
 
-88 assertions, no live session and no cost: it feeds the hook `PreToolUse`
+100 assertions, no live session and no cost: it feeds the hook `PreToolUse`
 payloads on stdin and asserts on the JSON it prints, with state and primers
 redirected away from `~/.claude` and throwaway git repos as fixtures. Covers
 every decision either predecessor hook made, plus what the merge introduces —
@@ -242,15 +263,20 @@ every `git push`. `allow` is opt-in per rule, and there is a test for it.
 
 `hooks/verify-bash-policy.sh` re-checks the behavior after a CLI upgrade: it
 drives a throwaway headless session (`claude -p`, Haiku,
-`--dangerously-skip-permissions`) through eight negative controls and one real
-commit, then greps the transcript and prints PASS/FAIL.
+`--dangerously-skip-permissions`) through eight negative controls, an empty
+commit, and a commit that adds comments, then greps the transcript and prints
+PASS/FAIL.
 
 ```sh
 ./hooks/verify-bash-policy.sh
 ```
 
-PASS = zero injections/denials on the negative controls, primer exactly once on the
-positive control. If upstream ever fixes the `if` filter, the gates can return as a
+PASS = zero injections/denials on the negative controls, the primer on the empty
+commit, and the comment guide on the commit that adds comments. The guide is
+matched by content rather than by presence: both commits carry an injection, so
+presence alone would pass on the wrong one.
+
+If upstream ever fixes the `if` filter, the gates can return as a
 cheap pre-filter in front of the hook, keeping in-script matching as defense
 in depth.
 

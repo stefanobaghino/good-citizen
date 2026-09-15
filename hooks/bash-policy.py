@@ -90,7 +90,7 @@ def main():
     if not cmd or not isinstance(cmd, str):
         return
 
-    from bashpolicy import githist, hygiene, shell, state  # noqa: F401
+    from bashpolicy import comments, githist, hygiene, shell, state  # noqa: F401
     from bashpolicy.policy import evaluate
 
     ctx = Context(data, state.load_config())

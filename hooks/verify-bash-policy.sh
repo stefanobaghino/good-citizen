@@ -1,10 +1,10 @@
 #!/bin/bash
 # Re-verification for the Bash policy hook wired in settings
 # (hooks/bash-policy.py) — run after each Claude Code upgrade. Drives
-# one throwaway headless session through the negative controls and one
-# positive control, then checks the transcript:
-#   PASS = zero context injections/denials on negatives, primer exactly
-#          once on the positive control.
+# one throwaway headless session through the negative controls and two
+# positive controls, then checks the transcript:
+#   PASS = zero context injections/denials on negatives, primer on the
+#          empty commit, comment guide on the commit that adds comments.
 # Cost: one short claude-haiku session against your subscription.
 set -uo pipefail
 
@@ -29,6 +29,9 @@ x = "$(date) ${HOME} `id`"
 print(x)
 EOF
 9. git commit --allow-empty -m "Add verification fixture"
+10. printf '%s\n' 'class Fix {' '    // Jackson binds by field name, so these must not be renamed.' '    // The keep rule pins them.' '    int bar;' '}' > Fix.java
+11. git add Fix.java
+12. git commit -m "Add commented fixture"
 PROMPT
 
 echo "claude version: $(claude --version)"
@@ -69,11 +72,22 @@ for line in open(hits[0], encoding="utf-8"):
             continue
         seen.add(tuid)
         raw = att.get("content") or att.get("context") or ""
-        text = "".join(b.get("text", "") for b in raw if isinstance(b, dict)) if isinstance(raw, list) else str(raw)
+        # `content` is a list of plain strings; it has also been seen as
+        # a list of {"text": ...} blocks. Reading only one shape reports
+        # 0 chars for a primer that did arrive, which passes a presence
+        # check and fails a content check.
+        if isinstance(raw, list):
+            parts = [b if isinstance(b, str) else b.get("text", "")
+                     for b in raw if isinstance(b, (str, dict))]
+            text = "".join(parts)
+        else:
+            text = str(raw)
         contexts[tuid] = text
 
 ok = True
-positive = [t for t, c in commands.items() if "verification fixture" in c]
+hygiene = [t for t, c in commands.items() if "verification fixture" in c]
+comments = [t for t, c in commands.items() if "commented fixture" in c]
+positive = hygiene + comments
 for tuid, text in contexts.items():
     cmd = commands.get(tuid, "?")
     if tuid in positive:
@@ -84,9 +98,16 @@ for tuid, text in contexts.items():
 for tuid in set(denials):
     ok = False
     print(f"FAIL: unexpected denial on: {commands.get(tuid, '?')[:70]!r}")
-if positive and not any(t in positive for t in contexts):
+if hygiene and not any(t in hygiene for t in contexts):
     ok = False
-    print("FAIL: primer missing on positive control")
+    print("FAIL: primer missing on the empty-commit positive control")
+# The comment guide has to be checked by content: an empty commit also
+# carries a primer, so presence alone would pass on the wrong one.
+guide = [t for t in comments
+         if "Three tests, in order" in contexts.get(t, "")]
+if comments and not guide:
+    ok = False
+    print("FAIL: comment guide missing on the commented-fixture commit")
 neg_calls = len(commands) - len(positive)
 print(f"bash_calls={len(commands)} (negative={neg_calls}) injections={len(contexts)} denials={len(set(denials))}")
 print("PASS" if ok else "FAIL")

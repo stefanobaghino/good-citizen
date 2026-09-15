@@ -469,6 +469,125 @@ def test_non_bash_and_bad_input():
           f"rc={proc.returncode} out={proc.stdout[:80]}")
 
 
+def stage(repo, name, text):
+    path = os.path.join(repo, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    git(repo, "add", name)
+
+
+COMMENTED = """class Foo {
+    // Jackson binds by field name, so these must not be renamed.
+    // The keep rule in config.pro pins them.
+    int bar;
+}
+"""
+
+PLAIN = """class Plain {
+    int bar;
+}
+"""
+
+GUIDE_MARKER = "Three tests, in order"
+REMINDER_MARKER = "apply the recovery, staleness and subject tests"
+
+
+def test_comments():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-cmt-")
+    stage(repo, "src/Foo.java", COMMENTED)
+    cmd = 'git commit -m "Add the thing"'
+
+    first = run_hook(cmd, cwd=repo, home=home, session="cmtfull")
+    check("comments[full guide on first commit]",
+          GUIDE_MARKER in first["context"],
+          f"decision={first['decision']} ctx={first['context'][:160]}")
+    check("comments[never denies]", first["decision"] == "allow",
+          f"got {first['decision']} / {first['reason'][:120]}")
+
+    second = run_hook(cmd, cwd=repo, home=home, session="cmtfull")
+    check("comments[reminder on later commit]",
+          REMINDER_MARKER in second["context"]
+          and GUIDE_MARKER not in second["context"],
+          f"ctx={second['context'][:200]}")
+    check("comments[reminder points at the guide]",
+          "primer-comments.md" in second["context"],
+          f"ctx={second['context'][:200]}")
+    check("comments[reminder counts the blocks]",
+          "1 comment block" in second["context"],
+          f"ctx={second['context'][:200]}")
+
+    quiet = make_repo(gpgsign=True, published=True)
+    stage(quiet, "src/Plain.java", PLAIN)
+    r = run_hook(cmd, cwd=quiet, home=home, session="cmtplain")
+    check("comments[silent without added comments]",
+          GUIDE_MARKER not in r["context"],
+          f"ctx={r['context'][:160]}")
+
+    gen = make_repo(gpgsign=True, published=True)
+    stage(gen, "generated/Gen.java", COMMENTED)
+    r = run_hook(cmd, cwd=gen, home=home, session="cmtgen")
+    check("comments[skips generated trees]",
+          GUIDE_MARKER not in r["context"],
+          f"ctx={r['context'][:160]}")
+
+    # `git commit -a` stages at commit time, so the index is still empty
+    # when the hook runs and only `git diff HEAD` sees the change.
+    dash_a = make_repo(gpgsign=True, published=True)
+    stage(dash_a, "src/Foo.java", PLAIN)
+    git(dash_a, "commit", "--no-gpg-sign", "-q", "-m", "Seed the source file")
+    with open(os.path.join(dash_a, "src/Foo.java"), "w", encoding="utf-8") as fh:
+        fh.write(COMMENTED)
+    r = run_hook('git commit -am "Add the thing"', cwd=dash_a, home=home,
+                 session="cmtdasha")
+    check("comments[sees -a unstaged changes]", GUIDE_MARKER in r["context"],
+          f"ctx={r['context'][:160]}")
+
+
+def test_comment_blocks_in_process():
+    sys.path.insert(0, HOOKS)
+    from bashpolicy.comments import _blocks_by_file
+
+    diff = ("+++ b/src/Foo.java\n"
+            "@@ -1,0 +2,2 @@\n"
+            "+    // one\n"
+            "+    // two\n"
+            "@@ -20,0 +30,1 @@\n"
+            "+    // far away\n")
+    check("blocks[hunk header splits a run]",
+          _blocks_by_file(diff) == {"src/Foo.java": 2},
+          str(_blocks_by_file(diff)))
+
+    javadoc = ("+++ b/src/Foo.java\n"
+               "@@ -1,0 +2,3 @@\n"
+               "+    /**\n"
+               "+     * Why not the obvious alternative.\n"
+               "+     */\n"
+               "+    int bar;\n")
+    check("blocks[javadoc counts as one block]",
+          _blocks_by_file(javadoc) == {"src/Foo.java": 1},
+          str(_blocks_by_file(javadoc)))
+
+    mixed = ("+++ b/node_modules/dep/index.js\n"
+             "@@ -1,0 +2,1 @@\n"
+             "+// vendored\n"
+             "+++ b/scripts/run.sh\n"
+             "@@ -1,0 +2,2 @@\n"
+             "+#!/bin/sh\n"
+             "+# a real comment\n")
+    check("blocks[skips vendored, ignores shebang]",
+          _blocks_by_file(mixed) == {"scripts/run.sh": 1},
+          str(_blocks_by_file(mixed)))
+
+    unmapped = ("+++ b/notes.txt\n"
+                "@@ -1,0 +2,1 @@\n"
+                "+# not a code comment\n")
+    check("blocks[unmapped suffix yields nothing]",
+          _blocks_by_file(unmapped) == {},
+          str(_blocks_by_file(unmapped)))
+
+
 # --------------------------------------------------------------------- main
 
 if __name__ == "__main__":
@@ -485,6 +604,8 @@ if __name__ == "__main__":
     test_parser_in_process()
     test_primer_once_per_session()
     test_ack_and_retry()
+    test_comments()
+    test_comment_blocks_in_process()
     test_non_bash_and_bad_input()
 
     print(f"passed: {PASSED}")
