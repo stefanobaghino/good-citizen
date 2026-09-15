@@ -1,11 +1,10 @@
-"""On-disk state, config, and session primers.
+"""On-disk state, config, and per-context primers.
 
 The state directory and the primer directory are both overridable by
 environment variable, so the test suite never touches the real
 `~/.claude` state.
 """
 
-import datetime
 import json
 import os
 import time
@@ -18,9 +17,32 @@ PRIMER_DIR = os.environ.get("BASH_POLICY_PRIMER_DIR") or os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "hygiene")
 )
 
-PRIMER_TTL = 4 * 3600
+# A primer stops working because it has fallen behind in the context
+# window, not because time has passed. `primer_token_step` overrides.
+PRIMER_TOKEN_STEP = 200_000
 STATE_MAX_AGE = 7 * 24 * 3600
 TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
+
+USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens",
+                "cache_read_input_tokens")
+
+# "unreadable" is environmental; "drift" means the transcript no longer
+# looks the way this module expects and the code needs updating.
+NOTICES = {
+    "unreadable": (
+        "Primer re-arm unavailable: this session's transcript could not be "
+        "read, so the hygiene primer will not be re-injected as the "
+        "conversation grows. The commit itself is unaffected. Mention this "
+        "to the user rather than investigating it yourself."
+    ),
+    "drift": (
+        "Primer re-arm is disabled: the transcript's `usage` fields are no "
+        "longer in the shape hooks/bashpolicy/state.py expects, so context "
+        "growth cannot be measured and the primer will arrive only once per "
+        "session. This needs a code fix. Report it to the user rather than "
+        "stopping to fix it yourself."
+    ),
+}
 
 
 def load_config():
@@ -92,55 +114,133 @@ def write_json_marker(name, obj):
         pass
 
 
-def transcript_compact_ts(transcript_path):
-    """Timestamp (epoch) of the last compact_boundary in the transcript
-    tail, or None."""
+def transcript_context_tokens(transcript_path):
+    """`(tokens, problem)` for the newest assistant turn in the transcript
+    tail — the size of the context that turn was answered with.
+
+    `problem` is None on success, "unreadable" when there is no transcript
+    to read, and "drift" when assistant turns are there but none carries a
+    usable `usage`, which today can only mean the format changed. Lines are
+    scanned individually and bad ones skipped, so a line truncated by the
+    tail seek costs that line rather than the whole signal.
+    """
+    if not transcript_path:
+        return None, "unreadable"
     try:
         size = os.path.getsize(transcript_path)
         with open(transcript_path, "rb") as fh:
             if size > TRANSCRIPT_TAIL_BYTES:
                 fh.seek(size - TRANSCRIPT_TAIL_BYTES)
             tail = fh.read().decode("utf-8", errors="replace")
-        pos = tail.rfind("compact_boundary")
-        if pos == -1:
-            return None
-        line_start = tail.rfind("\n", 0, pos) + 1
-        line_end = tail.find("\n", pos)
-        line = tail[line_start : line_end if line_end != -1 else len(tail)]
-        ts = json.loads(line).get("timestamp")
-        if not ts:
-            return None
-        return datetime.datetime.fromisoformat(
-            ts.replace("Z", "+00:00")
-        ).timestamp()
-    except Exception:
+    except OSError:
+        return None, "unreadable"
+
+    saw_assistant = False
+    for line in reversed(tail.splitlines()):
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "assistant":
+            continue
+        saw_assistant = True
+        usage = (obj.get("message") or {}).get("usage")
+        if not isinstance(usage, dict):
+            continue
+        # Synthetic and refusal-fallback turns carry a usage block that
+        # sums to zero; they are not a reading of the context.
+        total = sum(usage.get(f) or 0 for f in USAGE_FIELDS)
+        if total:
+            return total, None
+    return None, ("drift" if saw_assistant else "unreadable")
+
+
+def token_step():
+    try:
+        step = int(load_config().get("primer_token_step") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return PRIMER_TOKEN_STEP
+    return step if step > 0 else PRIMER_TOKEN_STEP
+
+
+def read_token_marker(name):
+    """`(present, count)` for a primer marker.
+
+    `present` is False when the marker is absent or predates this scheme
+    (it then holds a bare epoch, and re-arming once is the right recovery).
+    `count` is None when the marker records an injection whose context size
+    could not be read — injected, but with no baseline to measure from.
+    """
+    try:
+        with open(state_path(name), encoding="utf-8") as fh:
+            raw = fh.read().strip()
+    except OSError:
+        return False, None
+    if not raw.startswith("tok:"):
+        return False, None
+    body = raw[4:]
+    if body == "?":
+        return True, None
+    try:
+        return True, int(body)
+    except ValueError:
+        return False, None
+
+
+def write_token_marker(name, count):
+    write_marker(name, "tok:%s" % ("?" if count is None else count))
+
+
+def notice_for(session_id, who, problem):
+    """The one-off warning for `problem`, or None if this context has
+    already been told."""
+    name = f"notice-{session_id}-{who}-{problem}"
+    if read_marker(name) is not None:
         return None
+    write_marker(name)
+    return NOTICES.get(problem)
 
 
-def build_primer(cats, session_id, transcript_path):
-    """Primer text for categories not yet injected this session, writing
-    their markers. Re-arms when the marker ages past PRIMER_TTL or the
-    transcript gained a newer compact boundary."""
-    now = time.time()
-    compact_ts = None
-    compact_checked = False
+def build_primer(cats, session_id, agent_id, transcript_path):
+    """`(primer text, notice)` for the categories this context still needs,
+    writing their markers.
+
+    A category is due when it has no marker, when the context has grown a
+    step since its last injection, or when the count has *dropped* — which
+    only happens on a compaction, the point at which the primer is gone
+    from the context entirely.
+
+    `agent_id` is present only inside a subagent, and it is part of the
+    marker name because the main thread and each subagent hold separate
+    contexts: without it the first one to run a watched command consumes
+    the primer for all of them.
+    """
+    who = agent_id or "main"
+    names = {cat: f"primer-{session_id}-{who}-{cat}" for cat in cats}
+    marks = {cat: read_token_marker(names[cat]) for cat in cats}
+
+    cur, problem = transcript_context_tokens(transcript_path)
+    step = token_step()
+
     needed = []
     for cat in cats:
-        mtime = read_marker(f"primer-{session_id}-{cat}")
-        if mtime is None:
+        present, prev = marks[cat]
+        if not present:
             needed.append(cat)
-            continue
-        if now - mtime > PRIMER_TTL:
+        elif prev is None or cur is None:
+            continue  # no baseline to measure against
+        elif cur < prev or cur - prev >= step:
             needed.append(cat)
-            continue
-        if not compact_checked:
-            compact_ts = (transcript_compact_ts(transcript_path)
-                          if transcript_path else None)
-            compact_checked = True
-        if compact_ts and compact_ts > mtime:
-            needed.append(cat)
+
+    # A first injection needs no count, so it loses nothing and has
+    # nothing to report.
+    notice = None
+    if problem and any(present for present, _ in marks.values()):
+        notice = notice_for(session_id, who, problem)
+
     if not needed:
-        return None
+        return None, notice
+
     parts = []
     for cat in needed:
         try:
@@ -150,7 +250,12 @@ def build_primer(cats, session_id, transcript_path):
         except OSError:
             pass
     if not parts:
-        return None
+        return None, notice
+
     for cat in needed:
-        write_marker(f"primer-{session_id}-{cat}", str(int(now)))
-    return "\n\n".join(parts)
+        write_token_marker(names[cat], cur)
+    return "\n\n".join(parts), notice
+
+
+def join_context(*parts):
+    return "\n\n".join(p for p in parts if p) or None

@@ -40,7 +40,7 @@ def check(name, cond, detail=""):
 
 
 def run_hook(command, cwd=None, home=None, session="testsession",
-             transcript=None, isolate_git=False):
+             transcript=None, isolate_git=False, agent=None):
     payload = {
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
@@ -50,6 +50,9 @@ def run_hook(command, cwd=None, home=None, session="testsession",
     }
     if transcript:
         payload["transcript_path"] = transcript
+    if agent:
+        # Claude Code sends agent_id only from inside a subagent.
+        payload["agent_id"] = agent
     env = dict(os.environ)
     env["BASH_POLICY_HOME"] = home or STATE_HOME
     env["BASH_POLICY_PRIMER_DIR"] = os.path.join(REPO, "hygiene")
@@ -422,21 +425,143 @@ def test_parser_in_process():
 
 # ------------------------------------------------------------------- primer
 
+UNREADABLE_MARKER = "transcript could not be read"
+DRIFT_MARKER = "no longer in the shape"
 
-def test_primer_once_per_session():
+
+def transcript(tokens, assistant=True, path=None):
+    """A transcript whose newest assistant turn reports `tokens` of
+    context. `assistant=False` writes turns with no usage at all, which is
+    what a format change would look like."""
+    path = path or tempfile.mkstemp(prefix="bashpolicy-tr-", suffix=".jsonl")[1]
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user", "message": {"role": "user"}}) + "\n")
+        line = {"type": "assistant", "message": {"role": "assistant"}}
+        if assistant:
+            line["message"]["usage"] = {
+                "input_tokens": 2,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": tokens - 2,
+            }
+        fh.write(json.dumps(line) + "\n")
+    return path
+
+
+def test_primer_token_rearm():
     repo = make_repo(gpgsign=True, published=True)
     home = tempfile.mkdtemp(prefix="bashpolicy-home-")
-    first = run_hook('git commit -m "Add the thing"', cwd=repo, home=home,
-                     session="primerone")
-    second = run_hook('git commit -m "Add another thing"', cwd=repo, home=home,
-                      session="primerone")
+    cmd = 'git commit -m "Add the thing"'
+    tr = transcript(50_000)
+
+    first = run_hook(cmd, cwd=repo, home=home, session="ptok", transcript=tr)
     check("primer[first injects]", len(first["context"]) > 0,
           f"{len(first['context'])} chars")
-    check("primer[second silent]", second["context"] == "",
+
+    second = run_hook(cmd, cwd=repo, home=home, session="ptok", transcript=tr)
+    check("primer[silent below the step]", second["context"] == "",
           f"{len(second['context'])} chars")
-    check("primer[both allow]",
-          first["decision"] == "allow" and second["decision"] == "allow",
-          f"{first['decision']} / {second['decision']}")
+
+    transcript(50_000 + 199_000, path=tr)
+    third = run_hook(cmd, cwd=repo, home=home, session="ptok", transcript=tr)
+    check("primer[still silent just under the step]", third["context"] == "",
+          f"{len(third['context'])} chars")
+
+    transcript(50_000 + 200_000, path=tr)
+    fourth = run_hook(cmd, cwd=repo, home=home, session="ptok", transcript=tr)
+    check("primer[re-arms at the step]", len(fourth["context"]) > 0,
+          f"{len(fourth['context'])} chars")
+
+    check("primer[all allow]",
+          {r["decision"] for r in (first, second, third, fourth)} == {"allow"},
+          str([r["decision"] for r in (first, second, third, fourth)]))
+
+
+def test_primer_rearms_on_drop():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-home-")
+    cmd = 'git commit -m "Add the thing"'
+    tr = transcript(300_000)
+    run_hook(cmd, cwd=repo, home=home, session="pdrop", transcript=tr)
+
+    # A compaction: far less context than the marker recorded, and far
+    # short of a step's growth.
+    transcript(20_000, path=tr)
+    after = run_hook(cmd, cwd=repo, home=home, session="pdrop", transcript=tr)
+    check("primer[re-arms when the count drops]", len(after["context"]) > 0,
+          f"{len(after['context'])} chars")
+
+
+def test_primer_per_agent():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-home-")
+    cmd = 'git commit -m "Add the thing"'
+    tr = transcript(50_000)
+
+    sub = run_hook(cmd, cwd=repo, home=home, session="pagent", transcript=tr,
+                   agent="agent-abc123")
+    main = run_hook(cmd, cwd=repo, home=home, session="pagent", transcript=tr)
+    check("primer[subagent injects]", len(sub["context"]) > 0,
+          f"{len(sub['context'])} chars")
+    check("primer[subagent does not consume the main thread's]",
+          len(main["context"]) > 0, f"{len(main['context'])} chars")
+
+    again = run_hook(cmd, cwd=repo, home=home, session="pagent", transcript=tr,
+                     agent="agent-abc123")
+    check("primer[subagent marker still holds]", again["context"] == "",
+          f"{len(again['context'])} chars")
+
+
+def test_primer_unreadable_count():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-home-")
+    cmd = 'git commit -m "Add the thing"'
+
+    # No transcript_path at all: the first injection needs no count, so it
+    # carries no complaint.
+    first = run_hook(cmd, cwd=repo, home=home, session="pnone")
+    check("primer[first injection is quiet about the count]",
+          UNREADABLE_MARKER not in first["context"],
+          first["context"][-120:])
+
+    second = run_hook(cmd, cwd=repo, home=home, session="pnone")
+    check("primer[reports an unreadable count]",
+          UNREADABLE_MARKER in second["context"], second["context"][:160])
+
+    third = run_hook(cmd, cwd=repo, home=home, session="pnone")
+    check("primer[reports it only once]",
+          UNREADABLE_MARKER not in third["context"],
+          f"{len(third['context'])} chars")
+    check("primer[no re-arm without a count]", third["context"] == "",
+          f"{len(third['context'])} chars")
+
+
+def test_primer_format_drift():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-home-")
+    cmd = 'git commit -m "Add the thing"'
+    tr = transcript(50_000)
+    run_hook(cmd, cwd=repo, home=home, session="pdrift", transcript=tr)
+
+    # Assistant turns are there, but none carries a usage block.
+    transcript(0, assistant=False, path=tr)
+    after = run_hook(cmd, cwd=repo, home=home, session="pdrift", transcript=tr)
+    check("primer[reports format drift, not an unreadable file]",
+          DRIFT_MARKER in after["context"], after["context"][:160])
+
+
+def test_primer_marker_migration():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-home-")
+    os.makedirs(os.path.join(home, ".state"), exist_ok=True)
+    # What this scheme's predecessor left behind: a bare epoch.
+    for cat in ("shared", "commit"):
+        with open(os.path.join(home, ".state",
+                               f"primer-pmig-main-{cat}"), "w") as fh:
+            fh.write("1789464369")
+    r = run_hook('git commit -m "Add the thing"', cwd=repo, home=home,
+                 session="pmig", transcript=transcript(50_000))
+    check("primer[pre-change marker re-arms once]", len(r["context"]) > 0,
+          f"{len(r['context'])} chars")
 
 
 def test_ack_and_retry():
@@ -608,7 +733,12 @@ if __name__ == "__main__":
     test_fold()
     test_tiers_in_process()
     test_parser_in_process()
-    test_primer_once_per_session()
+    test_primer_token_rearm()
+    test_primer_rearms_on_drop()
+    test_primer_per_agent()
+    test_primer_unreadable_count()
+    test_primer_format_drift()
+    test_primer_marker_migration()
     test_ack_and_retry()
     test_comments()
     test_comment_blocks_in_process()

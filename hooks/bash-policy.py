@@ -28,7 +28,8 @@ Layout:
            package, so the repo stays self-contained)
   State:   ~/.claude/hooks/.state/         ($BASH_POLICY_HOME to override)
   Config:  ~/.claude/hooks/hygiene-config.json
-           {"signoff_cwd_substrings": ["/path/fragment", ...]}
+           {"signoff_cwd_substrings": ["/path/fragment", ...],
+            "primer_token_step": 200000}
 """
 
 import json
@@ -53,12 +54,18 @@ CRITICAL_FALLBACK_RE = re.compile(r"\bgit\b[^\n;|&]*\b(?:push|commit|rebase)\b")
 class Context:
     """Per-invocation facts the rules need."""
 
-    __slots__ = ("session_id", "cwd", "transcript_path", "config", "_deadline")
+    __slots__ = ("session_id", "agent_id", "cwd", "transcript_path", "config",
+                 "_deadline")
 
     def __init__(self, payload, config):
         self.session_id = re.sub(
             r"[^A-Za-z0-9-]", "_", str(payload.get("session_id") or "nosession")
         )
+        # Present only when the call comes from inside a subagent, whose
+        # context is not the main thread's.
+        agent_id = payload.get("agent_id")
+        self.agent_id = (re.sub(r"[^A-Za-z0-9-]", "_", str(agent_id))
+                         if agent_id else None)
         self.cwd = payload.get("cwd") or os.getcwd()
         self.transcript_path = payload.get("transcript_path")
         self.config = config

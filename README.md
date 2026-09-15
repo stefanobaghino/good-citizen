@@ -91,9 +91,14 @@ push protection, which is how the standalone guard behaved.
   exits 0 silently, and an ADVISORY rule's own error is skipped. Only documented
   rule violations and CRITICAL rule failures may deny.
 - **Primer** — the genuinely judgment-based rules (tone, structure, what belongs in
-  a PR body) are injected from `hygiene/primer-*.md`, at most once per session per
-  category. Re-armed when the marker is older than 4 h or the transcript gained a
-  `compact_boundary` after it.
+  a PR body) are injected from `hygiene/primer-*.md`, at most once per category per
+  context. What makes a primer stop working is falling behind in the context
+  window, so the marker records the context size at injection and re-arms after
+  200k more tokens (`primer_token_step` to override), or whenever the count drops,
+  which is what a compaction looks like. The main thread and each subagent get
+  their own markers, keyed on the payload's `agent_id`; sharing one meant the
+  first to run a watched command consumed the primer for all of them. When the
+  count cannot be read the primer is not re-armed and a one-off notice says so.
 
 ### The rules — git history safety (CRITICAL)
 
@@ -160,7 +165,7 @@ hooks/bashpolicy/policy.py     # rule registry, criticality tiers, decision fold
 hooks/bashpolicy/githist.py    # git history safety rules (CRITICAL)
 hooks/bashpolicy/hygiene.py    # commit/PR/issue hygiene rules (ADVISORY)
 hooks/bashpolicy/comments.py   # comment guidance on commits (ADVISORY, never blocks)
-hooks/bashpolicy/state.py      # markers, config, session primers
+hooks/bashpolicy/state.py      # markers, config, per-context primers
 hooks/test-bash-policy.py      # unit suite — no live session, no cost
 hooks/verify-bash-policy.sh    # post-upgrade re-verification harness (live session)
 hygiene/primer-shared.md       # judgment primer, always included
@@ -224,7 +229,7 @@ Python 3 stdlib only; no dependencies, no `jq`.
 
 4. **Verify.** Ask Claude to draft a commit whose message carries a
    `Co-Authored-By: Claude` trailer; the hook should deny it with the fix. A clean
-   commit should pass, with the primer attached once per session.
+   commit should pass, with the primer attached once per context.
 
 ### Configuration (optional)
 
@@ -237,6 +242,9 @@ create `~/.claude/hooks/hygiene-config.json`:
 
 Any cwd containing one of these fragments suppresses the trailer/`-s` denial there.
 Absent file = defaults (deny all trailers).
+
+`"primer_token_step": 200000` in the same file sets how much the context has to
+grow before a primer is re-injected.
 
 ### Tests
 

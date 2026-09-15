@@ -6,10 +6,10 @@ phrasing, punctuation density) were tried and dropped — they miss
 inaccuracy and odd register entirely, and the shapes they do catch
 include the rationale and correctness arguments that are worth writing.
 
-The full guide arrives once per session (`state.build_primer` also
-re-arms it after a compaction, which is when it is most needed); later
-commits get a one-line reminder naming what is in that diff, plus the
-path to the guide so the wording stays recoverable.
+The full guide arrives once per context (`state.build_primer` also
+re-arms it as the context grows, and after a compaction, which is when it
+is most needed); later commits get a one-line reminder naming what is in
+that diff, plus the path to the guide so the wording stays recoverable.
 """
 
 import os
@@ -135,7 +135,8 @@ def check_comments(invocations, ctx):
         return []
 
     state.ensure_state_dir()
-    primer = state.build_primer(["comments"], ctx.session_id,
-                                ctx.transcript_path)
+    primer, notice = state.build_primer(["comments"], ctx.session_id,
+                                        ctx.agent_id, ctx.transcript_path)
     return [Finding("allow", "comments",
-                    context=primer or _reminder(counts))]
+                    context=state.join_context(primer or _reminder(counts),
+                                               notice))]

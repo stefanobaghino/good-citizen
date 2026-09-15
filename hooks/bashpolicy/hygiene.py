@@ -435,5 +435,7 @@ def check_hygiene(invocations, ctx):
     # when there is no primer to carry.
     state.drop_marker(loop_key)
     cats = ["shared"] + [k for k in ("commit", "pr", "issue") if k in kinds]
-    primer = state.build_primer(cats, ctx.session_id, ctx.transcript_path)
-    return [Finding("allow", "hygiene", context=primer)]
+    primer, notice = state.build_primer(cats, ctx.session_id, ctx.agent_id,
+                                        ctx.transcript_path)
+    return [Finding("allow", "hygiene",
+                    context=state.join_context(primer, notice))]
