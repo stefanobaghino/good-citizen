@@ -4,7 +4,8 @@ The artifact under review is extracted from the already tokenized
 `Invocation`, and the findings go through the shared fold.
 
 These rules are ADVISORY: a bug here must never block work, which is
-also why the loop guard and the ack-and-retry escape exist.
+also why the ack-and-retry escape exists and why the loop guard hands a
+finding that survives two rewrites to the user.
 """
 
 import hashlib
@@ -71,6 +72,7 @@ class Artifact:
         self.source = "none"      # inline | heredoc | file | none
         self.signoff_flag = False
         self.extraction_failed = False
+        self.action = ""          # gh subcommand: create | edit | comment
 
     @property
     def subject(self):
@@ -86,6 +88,7 @@ class Artifact:
 def extract(inv, kind, cwd):
     """Build the Artifact from an already-tokenized invocation."""
     art = Artifact(kind)
+    art.action = inv.path[2] if len(inv.path) > 2 else ""
     words = inv.words
     flags = FLAGS_WITH_VALUE[kind]
     msgs = []
@@ -219,6 +222,36 @@ REF_INTENT_RE = re.compile(
 HEX_RE = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b")
 
 
+PR_TITLE_LIMIT = 70
+PR_SECTIONS = ("origin", "value", "notes")
+
+
+def pr_shape(art):
+    """What makes a PR's title or section layout miss hygiene/primer-pr.md.
+
+    Only the mechanically decidable part; the primer carries the rest.
+    A title-only `gh pr edit` has no body, so only its title is checked.
+    """
+    problems = []
+    title = art.title.strip()
+    if len(title) > PR_TITLE_LIMIT:
+        problems.append(f"PR title is {len(title)} chars (limit {PR_TITLE_LIMIT}).")
+    if not art.body:
+        return problems
+    heads = []
+    for line, is_code in code_stripped_lines(art.body):
+        m = None if is_code else HEADING_RE.match(line.strip())
+        if m:
+            heads.append(m.group(1).strip().rstrip("#").strip(" *_:").lower())
+    extra = [h for h in heads if h not in PR_SECTIONS]
+    if extra:
+        shown = ", ".join(f"`{h}`" for h in extra)
+        problems.append(f"PR body has sections other than Origin, Value and Notes: {shown}.")
+    if "origin" not in heads:
+        problems.append("PR body has no Origin section.")
+    return problems
+
+
 def run_checks(art, cfg, cwd):
     """Return list of findings: dicts {tier, rule, msg}."""
     f = []
@@ -271,6 +304,12 @@ def run_checks(art, cfg, cwd):
         add("A", "summary-blank-line",
             "Add a blank line after `</summary>` — without it the Markdown inside "
             "`<details>` doesn't render.")
+    if kind == "pr" and art.action in ("create", "edit"):
+        problems = pr_shape(art)
+        if problems:
+            add("A", "pr-shape",
+                " ".join(problems) + "\n\n"
+                + (state.read_primer("pr") or "Sections: Origin, Value, Notes only."))
     if kind == "pr" and CHECKBOX_RE.search(body_prose):
         add("A", "open-checkbox",
             "PR body contains an open checklist item (`- [ ]`). Do the verification "
@@ -412,12 +451,16 @@ def check_hygiene(invocations, ctx):
         prev = state.read_json_marker(loop_key, {"count": 0, "rules": []})
         shrunk = set(rules) < set(prev.get("rules") or [])
         if prev.get("count", 0) >= 2 and not shrunk:
-            # loop guard: fail open with the findings as a warning
+            # loop guard: two rewrites did not clear the findings, so the
+            # user decides. With no one to ask (headless runs), the
+            # harness turns this into a denial.
             state.drop_marker(loop_key)
-            warn = "Hygiene warnings (not blocking): " + " | ".join(
-                fi["msg"] for fi in findings
-            )
-            return [Finding("allow", "hygiene", context=warn)]
+            ask = ("Hygiene findings persisted across two rewrites, so this is "
+                   "the user's call: approving runs the command as written. If "
+                   "it is declined, the command did not run — report it as not "
+                   "run, not as done.\n" + "\n".join(
+                       f"- {fi['msg']}" for fi in findings))
+            return [Finding("ask", "hygiene", msg=ask, tier=ADVISORY)]
         state.write_json_marker(loop_key, {
             "count": (prev.get("count", 0) + 1) if not shrunk else 1,
             "rules": rules,

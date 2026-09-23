@@ -20,6 +20,7 @@ PRIMER_DIR = os.environ.get("BASH_POLICY_PRIMER_DIR") or os.path.normpath(
 # A primer stops working because it has fallen behind in the context
 # window, not because time has passed. `primer_token_step` overrides.
 PRIMER_TOKEN_STEP = 200_000
+PRIMER_CATS = ("shared", "commit", "pr", "issue", "comments")
 STATE_MAX_AGE = 7 * 24 * 3600
 TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
 
@@ -201,9 +202,37 @@ def notice_for(session_id, who, problem):
     return NOTICES.get(problem)
 
 
+def primer_marker(session_id, agent_id, cat):
+    return f"primer-{session_id}-{agent_id or 'main'}-{cat}"
+
+
+def read_primer(cat):
+    try:
+        with open(os.path.join(PRIMER_DIR, f"primer-{cat}.md"),
+                  encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def start_primers(session_id, agent_id, baseline):
+    """Every primer, for a context that is just starting, with the markers
+    written at `baseline` so the per-command hook only re-sends them once
+    the context has grown a step past it."""
+    ensure_state_dir()
+    parts = [p for p in (read_primer(cat) for cat in PRIMER_CATS) if p]
+    for cat in PRIMER_CATS:
+        write_token_marker(primer_marker(session_id, agent_id, cat), baseline)
+    return "\n\n".join(parts) or None
+
+
 def build_primer(cats, session_id, agent_id, transcript_path):
     """`(primer text, notice)` for the categories this context still needs,
     writing their markers.
+
+    The session-start hook normally writes every marker first, so this
+    only re-sends; a missing marker (the hook not registered, or a context
+    that predates it) still gets the primer on its first watched command.
 
     A category is due when it has no marker, when the context has grown a
     step since its last injection, or when the count has *dropped* — which
@@ -216,7 +245,7 @@ def build_primer(cats, session_id, agent_id, transcript_path):
     the primer for all of them.
     """
     who = agent_id or "main"
-    names = {cat: f"primer-{session_id}-{who}-{cat}" for cat in cats}
+    names = {cat: primer_marker(session_id, agent_id, cat) for cat in cats}
     marks = {cat: read_token_marker(names[cat]) for cat in cats}
 
     cur, problem = transcript_context_tokens(transcript_path)
@@ -241,14 +270,7 @@ def build_primer(cats, session_id, agent_id, transcript_path):
     if not needed:
         return None, notice
 
-    parts = []
-    for cat in needed:
-        try:
-            with open(os.path.join(PRIMER_DIR, f"primer-{cat}.md"),
-                      encoding="utf-8") as fh:
-                parts.append(fh.read().strip())
-        except OSError:
-            pass
+    parts = [p for p in (read_primer(cat) for cat in needed) if p]
     if not parts:
         return None, notice
 

@@ -1,4 +1,4 @@
-Comments — this diff adds some; apply these before committing.
+Comments — apply these to every comment you write or edit.
 
 Three tests, in order:
 1. Recovery — could a competent reader get this from the code, the tests, a type signature, git history, or a linked issue? If yes, delete it.

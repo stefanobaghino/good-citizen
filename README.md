@@ -9,8 +9,9 @@ used, in three domains:
 
 - **Artifact hygiene** — validates the `git commit`, `gh pr create`, or
   `gh issue create|comment|edit` Claude is about to run and denies violations
-  with the exact fix, at the moment of action. Judgment-only guidance still gets
-  injected, but as a ~113-token primer, once per session.
+  with the exact fix, at the moment of action. Judgment-only guidance arrives
+  as primers when a session or subagent starts — see
+  [Session-start primers](#session-start-primers).
 - **Git history safety** — refuses force pushes and unsigned commits, and asks
   before rewriting history that is already published.
 - **Worktree and branch naming** — refuses a `+` in a worktree path and a branch
@@ -87,20 +88,40 @@ push protection, which is how the standalone guard behaved.
 - **Ack-and-retry (Tier C)** — intent-dependent findings (a bare `@name` or `#123`
   that would ping/auto-link) deny once; re-running the *identical* command passes.
 - **Loop guard** — after 2 denies for the same command family with no shrinking of
-  the violation set, the third attempt is allowed with findings downgraded to a
-  warning. The hook can slow a bad artifact down, never wedge a session.
+  the violation set, the third attempt returns `ask`: the user sees the findings
+  and decides. The reason says that a declined command did not run, because a
+  subagent has been seen reporting a blocked command as done. With no one to
+  ask (`claude -p`, including `--dangerously-skip-permissions`, and subagents
+  there) the harness turns `ask` into a denial and the count starts over.
 - **Fail open** — an error outside the rule tiers (bad stdin, import failure)
   exits 0 silently, and an ADVISORY rule's own error is skipped. Only documented
   rule violations and CRITICAL rule failures may deny.
-- **Primer** — the genuinely judgment-based rules (tone, structure, what belongs in
-  a PR body) are injected from `hygiene/primer-*.md`, at most once per category per
-  context. What makes a primer stop working is falling behind in the context
-  window, so the marker records the context size at injection and re-arms after
-  200k more tokens (`primer_token_step` to override), or whenever the count drops,
-  which is what a compaction looks like. The main thread and each subagent get
-  their own markers, keyed on the payload's `agent_id`; sharing one meant the
-  first to run a watched command consumed the primer for all of them. When the
-  count cannot be read the primer is not re-armed and a one-off notice says so.
+- **Primer re-send** — the primers first arrive at context start (below). What
+  makes a primer stop working is falling behind in the context window, so each
+  marker records the context size at injection, and a watched command re-sends
+  its categories after 200k more tokens (`primer_token_step` to override), or
+  whenever the count drops, which is what a compaction looks like. The main
+  thread and each subagent get their own markers, keyed on the payload's
+  `agent_id`; sharing one meant the first to run a watched command consumed the
+  primer for all of them. A context with no marker at all — the session hook
+  not registered, or a session that predates it — gets the primer on its first
+  watched command. When the count cannot be read the primer is not re-armed and
+  a one-off notice says so.
+
+### Session-start primers
+
+`hooks/session-primer.py`, registered for `SessionStart` and `SubagentStart`,
+hands every `hygiene/primer-*.md` (about 3k characters) to a context as it
+starts, as `additionalContext`. It runs in every repo and acts like a
+user-level CLAUDE.md for commit, PR, issue and comment style, with one source
+per rule: the same files feed the re-send and the PR-shape denial.
+
+It fires on `startup`, `resume`, `clear` and `compact`, and writes the primer
+markers the Bash hook reads. A fresh, cleared or compacted context starts
+measuring growth from 0; a resumed one from the transcript's size, since the
+whole conversation is back ahead of the primer. Before it, a primer was
+attached to the first *passing* watched command — after the artifact had been
+drafted, so it never shaped the first one.
 
 ### The rules — git history safety (CRITICAL)
 
@@ -126,7 +147,7 @@ inspected in the repo it targets rather than wherever the hook process sits.
 
 | Tier | Meaning | Examples |
 |---|---|---|
-| **A** — deterministic, always deny | Mechanically decidable | commit subject > 70 chars or trailing period; `Co-Authored-By`/`Signed-off-by`/`Acked-by`/`Reviewed-by` trailers; `-s`/`--signoff`; AI-attribution lines; multi-issue or negated closing keywords; missing blank line after `</summary>`; open `- [ ]` checkboxes in PR bodies; inline `-m`/`--body` with shell-hazard chars or > 200 chars; local-only paths (`/tmp`, `/Users`, …) |
+| **A** — deterministic, always deny | Mechanically decidable | PR title > 70 chars, PR body without an Origin section or with sections other than Origin / Value / Notes (`gh pr create`, `gh pr edit` with a body; the denial carries `primer-pr.md`); commit subject > 70 chars or trailing period; `Co-Authored-By`/`Signed-off-by`/`Acked-by`/`Reviewed-by` trailers; `-s`/`--signoff`; AI-attribution lines; multi-issue or negated closing keywords; missing blank line after `</summary>`; open `- [ ]` checkboxes in PR bodies; inline `-m`/`--body` with shell-hazard chars or > 200 chars; local-only paths (`/tmp`, `/Users`, …) |
 | **B** — high-confidence heuristics | Deny, tuned for near-zero false positives | hard-wrapped paragraphs landing a Markdown token at column 0; PR bodies enumerating branch commits; "Follow-ups" sections with no linked issues; test-plan sections that only restate CI commands |
 | **C** — intent-dependent | Deny once, identical retry passes | bare `@mentions`; bare `#N` with no referencing intent nearby; ambiguous hex tokens that auto-link as commit SHAs |
 
@@ -185,6 +206,7 @@ for an unresolvable `git -C "$R"`.
 
 ```
 hooks/bash-policy.py           # the hook entry point (single registration)
+hooks/session-primer.py        # SessionStart / SubagentStart: primers at context start
 hooks/bashpolicy/shell.py      # command splitting/tokenizing, shared by all rules
 hooks/bashpolicy/policy.py     # rule registry, criticality tiers, decision fold
 hooks/bashpolicy/githist.py    # git history safety rules (CRITICAL)
@@ -242,6 +264,18 @@ Python 3 stdlib only; no dependencies, no `jq`.
    }
    ```
 
+   Register the session-start primers alongside it, in the same `hooks`
+   object:
+
+   ```json
+   "SessionStart": [
+     { "hooks": [ { "type": "command", "command": "<REPO>/hooks/session-primer.py", "timeout": 10 } ] }
+   ],
+   "SubagentStart": [
+     { "hooks": [ { "type": "command", "command": "<REPO>/hooks/session-primer.py", "timeout": 10 } ] }
+   ]
+   ```
+
    No `if` gate — the hook matches commands itself. Set the `timeout`
    explicitly: the default for `command` hooks is **600s**, so a wedged hook
    would otherwise sit for ten minutes before the harness kills it.
@@ -255,7 +289,8 @@ Python 3 stdlib only; no dependencies, no `jq`.
 
 4. **Verify.** Ask Claude to draft a commit whose message carries a
    `Co-Authored-By: Claude` trailer; the hook should deny it with the fix. A clean
-   commit should pass, with the primer attached once per context.
+   commit should pass with no context attached, since the primers arrived at
+   session start.
 
 ### Configuration (optional)
 
@@ -282,7 +317,7 @@ falls back to the default rather than disabling the rule.
 python3 hooks/test-bash-policy.py
 ```
 
-155 assertions, no live session and no cost: it feeds the hook `PreToolUse`
+192 assertions, no live session and no cost: it feeds the hook `PreToolUse`
 payloads on stdin and asserts on the JSON it prints, with state and primers
 redirected away from `~/.claude` and throwaway git repos as fixtures. Covers
 every decision either predecessor hook made, plus what the merge introduces —
@@ -309,10 +344,9 @@ PASS/FAIL.
 ./hooks/verify-bash-policy.sh
 ```
 
-PASS = zero injections/denials on the negative controls, the primer on the empty
-commit, and the comment guide on the commit that adds comments. The guide is
-matched by content rather than by presence: both commits carry an injection, so
-presence alone would pass on the wrong one.
+PASS = the primers at session start, zero injections/denials on the negative
+controls and on the empty commit, and the comment reminder on the commit that
+adds comments, matched by content.
 
 If upstream ever fixes the `if` filter, the gates can return as a
 cheap pre-filter in front of the hook, keeping in-script matching as defense

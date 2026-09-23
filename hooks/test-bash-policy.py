@@ -806,6 +806,166 @@ def test_naming():
           r["decision"] == "deny", f"got {r['decision']}")
 
 
+# ------------------------------------------------------------ session start
+
+SESSION_HOOK = os.path.join(HOOKS, "session-primer.py")
+PRIMER_NEEDLES = ("Commits:", "Issues:", "No other sections", "Hygiene (GitHub",
+                  GUIDE_MARKER)
+
+
+def run_start(event, session, home, source=None, transcript=None, agent=None):
+    payload = {"hook_event_name": event, "session_id": session, "cwd": REPO}
+    if source:
+        payload["source"] = source
+    if transcript:
+        payload["transcript_path"] = transcript
+    if agent:
+        payload["agent_id"] = agent
+    env = dict(os.environ)
+    env["BASH_POLICY_HOME"] = home
+    env["BASH_POLICY_PRIMER_DIR"] = os.path.join(REPO, "hygiene")
+    proc = subprocess.run([sys.executable, SESSION_HOOK], input=json.dumps(payload),
+                          capture_output=True, text=True, env=env, timeout=60)
+    out = proc.stdout.strip()
+    return json.loads(out)["hookSpecificOutput"] if out else {}
+
+
+def test_session_primer():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-start-")
+    cmd = 'git commit -m "Add the thing"'
+
+    out = run_start("SessionStart", "sstart", home, source="startup")
+    ctx = out.get("additionalContext") or ""
+    check("start[event name echoed]", out.get("hookEventName") == "SessionStart",
+          str(out)[:120])
+    for needle in PRIMER_NEEDLES:
+        check(f"start[carries {needle!r}]", needle in ctx, ctx[:120])
+    check("start[within the context limit]", len(ctx) < 10_000, f"{len(ctx)} chars")
+
+    r = run_hook(cmd, cwd=repo, home=home, session="sstart",
+                 transcript=transcript(50_000))
+    check("start[first commit carries no primer]",
+          r["decision"] == "allow" and r["context"] == "",
+          f"{r['decision']} / {len(r['context'])} chars")
+    r = run_hook(cmd, cwd=repo, home=home, session="sstart",
+                 transcript=transcript(200_000))
+    check("start[growth from 0 re-sends]", len(r["context"]) > 0,
+          f"{len(r['context'])} chars")
+
+    # Resumed: the whole conversation is back ahead of the primer, so
+    # growth is measured from the transcript's size.
+    tr = transcript(300_000)
+    run_start("SessionStart", "sresume", home, source="resume", transcript=tr)
+    r = run_hook(cmd, cwd=repo, home=home, session="sresume", transcript=tr)
+    check("start[resume baseline holds]", r["context"] == "",
+          f"{len(r['context'])} chars")
+    transcript(500_000, path=tr)
+    r = run_hook(cmd, cwd=repo, home=home, session="sresume", transcript=tr)
+    check("start[resume re-sends after a step]", len(r["context"]) > 0,
+          f"{len(r['context'])} chars")
+
+    # A subagent's start covers that subagent only.
+    out = run_start("SubagentStart", "ssub", home, agent="agent-x1")
+    check("start[subagent gets primers]",
+          "No other sections" in (out.get("additionalContext") or ""), str(out)[:120])
+    tr = transcript(50_000)
+    sub = run_hook(cmd, cwd=repo, home=home, session="ssub", transcript=tr,
+                   agent="agent-x1")
+    main = run_hook(cmd, cwd=repo, home=home, session="ssub", transcript=tr)
+    check("start[subagent commit quiet]", sub["context"] == "",
+          f"{len(sub['context'])} chars")
+    check("start[main thread without a start still gets it]",
+          len(main["context"]) > 0, f"{len(main['context'])} chars")
+
+    check("start[ignores other events]",
+          run_start("PreToolUse", "sother", home) == {}, "")
+
+
+# ------------------------------------------------------------------ pr shape
+
+DV_TEMPLATE = """### Origin <!--- Required if no issue is linked -->
+Closes #123
+
+### Description
+- Did the thing
+
+### Reviewer Instructions
+
+### Checklist
+
+- [x] Issue is linked in the development section of the pull request
+"""
+
+
+def test_pr_shape():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-pr-")
+
+    def body(name, text):
+        path = os.path.join(repo, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def pr(label, cmd, want, needle=None, absent=None):
+        r = run_hook(cmd, cwd=repo, home=home, session=f"pr-{label}")
+        check(f"pr[{label}]", r["decision"] == want,
+              f"want {want} got {r['decision']} / {r['reason'][:160]}")
+        if needle:
+            check(f"pr-reason[{label}]", needle in r["reason"], r["reason"][:200])
+        if absent:
+            check(f"pr-reason-absent[{label}]", absent not in r["reason"],
+                  r["reason"][:200])
+
+    good = body("good.md", "## Origin\n\nCloses #123\n")
+    pr("template", f'gh pr create --title "Add it" --body-file {body("t.md", DV_TEMPLATE)}',
+       "deny", "`description`, `reviewer instructions`, `checklist`")
+    pr("template-carries-primer",
+       f'gh pr create --title "Add it" --body-file {body("t2.md", DV_TEMPLATE)}',
+       "deny", "No other sections")
+    pr("origin-only", f'gh pr create --title "Add it" --body-file {good}', "allow")
+    pr("no-origin",
+       f'gh pr create --title "Add it" --body-file {body("v.md", "## Value\n\nFaster builds.\n")}',
+       "deny", "no Origin section")
+    pr("extra-section",
+       f'gh pr create --title "Add it" --body-file '
+       f'{body("x.md", "## Origin\n\nSee https://github.com/gradle/dv/issues/1\n\n## Testing\n\nRan it.\n")}',
+       "deny", "`testing`")
+    pr("any-level",
+       f'gh pr create --title "Add it" --body-file '
+       f'{body("l.md", "### origin\n\nCloses #123\n\n#### Notes:\n\nKeeps the order.\n")}',
+       "allow")
+    pr("fenced-heading",
+       f'gh pr create --title "Add it" --body-file '
+       f'{body("f.md", "## Origin\n\nCloses #123\n\n```\n## Not a heading\n```\n")}',
+       "allow")
+    pr("title-71", f'gh pr create --title "{"A" * 71}" --body-file {good}',
+       "deny", "71 chars")
+    pr("title-70", f'gh pr create --title "{"A" * 70}" --body-file {good}', "allow")
+    pr("edit-title-only", 'gh pr edit 5 --title "Shorter title"', "allow")
+    pr("edit-body",
+       f'gh pr edit 5 --body-file {body("e.md", "## Summary\n\nChanged.\n")}',
+       "deny", "`summary`")
+    pr("comment-unaffected",
+       f'gh pr comment 5 --body-file {body("c.md", "## Summary\n\nLooks good.\n")}',
+       "allow", absent="sections other than")
+
+
+def test_loop_guard_asks():
+    repo = make_repo(gpgsign=True, published=True)
+    home = tempfile.mkdtemp(prefix="bashpolicy-loop-")
+    cmd = 'git commit -m "Add the thing."'
+    got = [run_hook(cmd, cwd=repo, home=home, session="loopask") for _ in range(4)]
+    check("loop[two denials, then ask, then deny again]",
+          [r["decision"] for r in got] == ["deny", "deny", "ask", "deny"],
+          str([r["decision"] for r in got]))
+    check("loop[ask names the finding]", "trailing period" in got[2]["reason"],
+          got[2]["reason"][:200])
+    check("loop[ask says a decline means not run]",
+          "report it as not run" in got[2]["reason"], got[2]["reason"][:200])
+
+
 # --------------------------------------------------------------------- main
 
 if __name__ == "__main__":
@@ -827,6 +987,9 @@ if __name__ == "__main__":
     test_primer_format_drift()
     test_primer_marker_migration()
     test_ack_and_retry()
+    test_session_primer()
+    test_pr_shape()
+    test_loop_guard_asks()
     test_comments()
     test_naming()
     test_comment_blocks_in_process()

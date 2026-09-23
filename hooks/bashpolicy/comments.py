@@ -6,9 +6,9 @@ phrasing, punctuation density) were tried and dropped — they miss
 inaccuracy and odd register entirely, and the shapes they do catch
 include the rationale and correctness arguments that are worth writing.
 
-The full guide arrives once per context (`state.build_primer` also
-re-arms it as the context grows, and after a compaction, which is when it
-is most needed); later commits get a one-line reminder naming what is in
+The full guide arrives with the other primers when a context starts, and
+`state.build_primer` re-sends it here once the context has grown enough
+to bury it. Every such commit gets a one-line reminder naming what is in
 that diff, plus the path to the guide so the wording stays recoverable.
 """
 
@@ -138,5 +138,5 @@ def check_comments(invocations, ctx):
     primer, notice = state.build_primer(["comments"], ctx.session_id,
                                         ctx.agent_id, ctx.transcript_path)
     return [Finding("allow", "comments",
-                    context=state.join_context(primer or _reminder(counts),
+                    context=state.join_context(_reminder(counts), primer,
                                                notice))]

@@ -3,8 +3,10 @@
 # (hooks/bash-policy.py) — run after each Claude Code upgrade. Drives
 # one throwaway headless session through the negative controls and two
 # positive controls, then checks the transcript:
-#   PASS = zero context injections/denials on negatives, primer on the
-#          empty commit, comment guide on the commit that adds comments.
+#   PASS = primers at session start (hooks/session-primer.py), zero
+#          injections/denials on negatives, none on the empty commit
+#          either (its primer already arrived), and the comment reminder
+#          on the commit that adds comments.
 # Cost: one short claude-haiku session against your subscription.
 set -uo pipefail
 
@@ -49,6 +51,7 @@ if not hits:
     print("FAIL: transcript not found"); sys.exit(1)
 
 commands, contexts, denials, seen = {}, {}, [], set()
+session_start = []
 for line in open(hits[0], encoding="utf-8"):
     try:
         obj = json.loads(line)
@@ -68,9 +71,11 @@ for line in open(hits[0], encoding="utf-8"):
     att = obj.get("attachment")
     if isinstance(att, dict) and att.get("type") == "hook_additional_context":
         tuid = att.get("toolUseID")
-        if tuid in seen:
-            continue
-        seen.add(tuid)
+        start = att.get("hookEvent") == "SessionStart"
+        if not start:
+            if tuid in seen:
+                continue
+            seen.add(tuid)
         raw = att.get("content") or att.get("context") or ""
         # `content` is a list of plain strings; it has also been seen as
         # a list of {"text": ...} blocks. Reading only one shape reports
@@ -82,33 +87,44 @@ for line in open(hits[0], encoding="utf-8"):
             text = "".join(parts)
         else:
             text = str(raw)
-        contexts[tuid] = text
+        if start:
+            session_start.append(text)
+        else:
+            contexts[tuid] = text
 
 ok = True
+start = "\n".join(session_start)
+for needle in ("No other sections", "Three tests, in order", "Commits:"):
+    if needle not in start:
+        ok = False
+        print(f"FAIL: session-start primers missing {needle!r}")
+if session_start:
+    print(f"ok: session-start primers ({len(start)} chars)")
 hygiene = [t for t, c in commands.items() if "verification fixture" in c]
 comments = [t for t, c in commands.items() if "commented fixture" in c]
-positive = hygiene + comments
+positive = comments
 for tuid, text in contexts.items():
     cmd = commands.get(tuid, "?")
     if tuid in positive:
-        print(f"ok: primer ({len(text)} chars) on positive control")
+        print(f"ok: context ({len(text)} chars) on positive control")
     else:
         ok = False
         print(f"FAIL: unexpected injection ({len(text)} chars) on: {cmd[:70]!r}")
 for tuid in set(denials):
     ok = False
     print(f"FAIL: unexpected denial on: {commands.get(tuid, '?')[:70]!r}")
-if hygiene and not any(t in hygiene for t in contexts):
+if not hygiene:
     ok = False
-    print("FAIL: primer missing on the empty-commit positive control")
-# The comment guide has to be checked by content: an empty commit also
-# carries a primer, so presence alone would pass on the wrong one.
-guide = [t for t in comments
-         if "Three tests, in order" in contexts.get(t, "")]
-if comments and not guide:
+    print("FAIL: the empty-commit control never ran")
+# Checked by content: the reminder, not the full guide, which arrived at
+# session start.
+reminder = [t for t in comments
+            if "apply the recovery, staleness and subject tests"
+            in contexts.get(t, "")]
+if comments and not reminder:
     ok = False
-    print("FAIL: comment guide missing on the commented-fixture commit")
-neg_calls = len(commands) - len(positive)
+    print("FAIL: comment reminder missing on the commented-fixture commit")
+neg_calls = len(commands) - len(positive) - len(hygiene)
 print(f"bash_calls={len(commands)} (negative={neg_calls}) injections={len(contexts)} denials={len(set(denials))}")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
