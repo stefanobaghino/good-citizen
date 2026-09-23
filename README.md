@@ -351,22 +351,3 @@ adds comments, matched by content.
 If upstream ever fixes the `if` filter, the gates can return as a
 cheap pre-filter in front of the hook, keeping in-script matching as defense
 in depth.
-
-## Skills
-
-### `/ptal`
-
-Composes a "please take a look" PR review-request message for Slack — problem-first,
-routed to the right reviewer, with the same hygiene rules the hook enforces (no
-counts, no AI attribution, link the trigger, lead with the experience). Drafts by
-default and posts only when told.
-
-```
-skills/ptal/SKILL.md
-```
-
-Install by symlinking into your skills dir, then reload (`/skills` or restart):
-
-```sh
-ln -s "$PWD/skills/ptal" ~/.claude/skills/ptal
-```
