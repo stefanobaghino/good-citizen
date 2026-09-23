@@ -1,0 +1,11 @@
+{
+  "name": "good-citizen",
+  "displayName": "Good Citizen",
+  "version": "0.1.0",
+  "description": "Claude Code hooks that make Claude a considerate collaborator: clean commits and PRs, safe pushes, conforming branches.",
+  "author": {
+    "name": "Stefano Baghino",
+    "email": "stefano@baghino.me"
+  },
+  "hooks": "./hooks/hooks.json"
+}

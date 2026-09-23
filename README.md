@@ -1,6 +1,7 @@
-# dv-user-sbaghino-tools
+# good-citizen
 
-Personal Claude Code tweaks.
+Claude Code hooks that make Claude a considerate collaborator: clean commits
+and PRs, safe pushes, conforming branches.
 
 ## Bash policy hook
 
@@ -205,6 +206,8 @@ for an unresolvable `git -C "$R"`.
 ### Layout
 
 ```
+.claude-plugin/plugin.json     # plugin manifest
+hooks/hooks.json               # hook registrations (${CLAUDE_PLUGIN_ROOT})
 hooks/bash-policy.py           # the hook entry point (single registration)
 hooks/session-primer.py        # SessionStart / SubagentStart: primers at context start
 hooks/bashpolicy/shell.py      # command splitting/tokenizing, shared by all rules
@@ -235,59 +238,33 @@ Python 3 stdlib only; no dependencies, no `jq`.
 
 ### Installation
 
-1. **Clone this repo somewhere stable** (the path is referenced from your Claude
-   settings):
+This repo is a Claude Code plugin: hooks are declared in
+`hooks/hooks.json` and referenced via `${CLAUDE_PLUGIN_ROOT}`, so no
+path-substitution or manual `settings.json` editing is needed.
+
+1. **Add the marketplace, then install this plugin from it:**
+   ```
+   /plugin marketplace add stefanobaghino/claude-plugins
+   /plugin install good-citizen@claude-plugins
+   ```
+   or, for local development against a working copy:
    ```sh
-   git clone git@github.com:gradle/dv-user-sbaghino-tools.git ~/src/dv-user-sbaghino-tools
+   claude --plugin-dir /path/to/good-citizen
    ```
 
-2. **Register one hook in `~/.claude/settings.json`.** Merge with whatever is
-   already there — don't replace. Substitute your clone path for `<REPO>`:
-
-   ```json
-   {
-     "hooks": {
-       "PreToolUse": [
-         {
-           "matcher": "Bash",
-           "hooks": [
-             {
-               "type": "command",
-               "command": "<REPO>/hooks/bash-policy.py",
-               "timeout": 30,
-               "statusMessage": "Checking Bash command policy"
-             }
-           ]
-         }
-       ]
-     }
-   }
+2. **Enable it** if it isn't enabled by default:
+   ```
+   /plugin enable good-citizen
    ```
 
-   Register the session-start primers alongside it, in the same `hooks`
-   object:
+   If you were previously running this as loose hooks wired into
+   `~/.claude/settings.json` (`hooks/hygiene-dispatch.py`, a personal
+   `git-history-guard.py`, or an earlier unpackaged copy of `bash-policy.py` /
+   `session-primer.py`), remove those entries **in the same change** — leaving
+   one wired alongside the plugin just double-parses every command and
+   double-reports every finding.
 
-   ```json
-   "SessionStart": [
-     { "hooks": [ { "type": "command", "command": "<REPO>/hooks/session-primer.py", "timeout": 10 } ] }
-   ],
-   "SubagentStart": [
-     { "hooks": [ { "type": "command", "command": "<REPO>/hooks/session-primer.py", "timeout": 10 } ] }
-   ]
-   ```
-
-   No `if` gate — the hook matches commands itself. Set the `timeout`
-   explicitly: the default for `command` hooks is **600s**, so a wedged hook
-   would otherwise sit for ten minutes before the harness kills it.
-
-   This single entry replaces both predecessors. If you were running
-   `hooks/hygiene-dispatch.py` and/or a personal `git-history-guard.py`, remove
-   those entries **in the same edit** — leaving one wired alongside this hook
-   just double-parses every command and double-reports every finding.
-
-3. **Reload settings.** Open the `/hooks` menu inside Claude Code once (or restart).
-
-4. **Verify.** Ask Claude to draft a commit whose message carries a
+3. **Verify.** Ask Claude to draft a commit whose message carries a
    `Co-Authored-By: Claude` trailer; the hook should deny it with the fix. A clean
    commit should pass with no context attached, since the primers arrived at
    session start.
